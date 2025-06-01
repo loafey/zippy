@@ -17,7 +17,11 @@ impl<T> Job<T> {
         let recv = self.0;
         recv.recv().unwrap()
     }
-    pub fn try_wait(self) -> Result<T, Self> {
+    pub fn try_wait(self) -> Option<T> {
+        let recv = self.0;
+        recv.recv().ok()
+    }
+    pub fn wait_non_blocking(self) -> Result<T, Self> {
         match self.0.try_recv() {
             Ok(res) => Ok(res),
             Err(_) => Err(self),
@@ -32,9 +36,10 @@ unsafe impl Send for Work {}
 unsafe impl Sync for Work {}
 
 type Recursive = bool;
+type Panic = bool;
 enum WorkerMessage {
     Work(Work, Recursive),
-    Done(usize),
+    Done(usize, Panic),
     GetStats(Sender<PoolStats>),
 }
 
@@ -48,10 +53,34 @@ pub struct PoolStats {
     pub backlog: usize,
     pub total_work_count: usize,
     pub total_rescue_threads: usize,
+    pub total_panics: usize,
 }
 
 thread_local! {
     static ALREADY_WORKING: AtomicBool = AtomicBool::default();
+}
+fn spawn_worker(i: usize) -> Sender<Work> {
+    let (sender, recv) = channel::<Work>();
+    std::thread::spawn(move || {
+        let res = std::thread::Builder::new()
+            .name(format!("Pool Worker {i}"))
+            .spawn(move || {
+                while let Ok(work) = recv.recv() {
+                    ALREADY_WORKING.with(|a| a.store(true, Ordering::Relaxed));
+                    (work.func)();
+                    ALREADY_WORKING.with(|a| a.store(false, Ordering::Relaxed));
+                    let sender = HEAD_SENDER.get().unwrap();
+                    sender.send(WorkerMessage::Done(i, false)).unwrap();
+                }
+            })
+            .unwrap()
+            .join();
+        if res.is_err() {
+            let sender = HEAD_SENDER.get().unwrap();
+            sender.send(WorkerMessage::Done(i, true)).unwrap();
+        }
+    });
+    sender
 }
 static HEAD_SENDER: OnceLock<Arc<Sender<WorkerMessage>>> = OnceLock::new();
 fn manager_thread() {
@@ -61,26 +90,15 @@ fn manager_thread() {
         std::thread::spawn(move || {
             let mut workers = BTreeMap::new();
             let mut taken = BTreeMap::new();
+            // for i in 0..2 {
             for i in 0..*THREAD_COUNT {
-                let (sender, recv) = channel::<Work>();
-                std::thread::Builder::new()
-                    .name(format!("Pool Worker {i}"))
-                    .spawn(move || {
-                        while let Ok(work) = recv.recv() {
-                            ALREADY_WORKING.with(|a| a.store(true, Ordering::Relaxed));
-                            (work.func)();
-                            ALREADY_WORKING.with(|a| a.store(false, Ordering::Relaxed));
-                            let sender = HEAD_SENDER.get().unwrap();
-                            sender.send(WorkerMessage::Done(i)).unwrap();
-                        }
-                    })
-                    .unwrap();
-                workers.insert(i, sender);
+                workers.insert(i, spawn_worker(i));
             }
 
             let mut backlog = Vec::new();
             let mut work_count: usize = 0;
             let mut rescue_threads: usize = 0;
+            let mut panics: usize = 0;
             while let Ok(work) = r.recv() {
                 match work {
                     WorkerMessage::Work(work, rec) => {
@@ -105,15 +123,23 @@ fn manager_thread() {
                             taken.insert(index, worker);
                         }
                     }
-                    WorkerMessage::Done(i) => {
+                    WorkerMessage::Done(i, panic) => {
+                        let worker = if panic {
+                            taken.remove(&i);
+                            panics = panics.wrapping_add(1);
+                            spawn_worker(i)
+                        } else {
+                            taken.remove(&i).unwrap()
+                        };
+                        workers.insert(i, worker);
+
                         if let Some(work) = backlog.pop() {
-                            taken.get(&i).unwrap().send(work).unwrap();
+                            let worker = workers.remove(&i).unwrap();
+                            worker.send(work).unwrap();
+                            taken.insert(i, worker);
                             if backlog.is_empty() {
                                 backlog = Vec::new();
                             }
-                        } else {
-                            let worker = taken.remove(&i).unwrap();
-                            workers.insert(i, worker);
                         }
                     }
                     WorkerMessage::GetStats(sender) => sender
@@ -123,6 +149,7 @@ fn manager_thread() {
                             backlog: backlog.len(),
                             total_work_count: work_count,
                             total_rescue_threads: rescue_threads,
+                            total_panics: panics,
                         })
                         .unwrap(),
                 }
@@ -170,22 +197,7 @@ fn fib(num: usize) -> usize {
 
 fn main() {
     // println!("{}", jobs.into_iter().map(|a| a.wait()).sum::<usize>());
-    let start_val = 20;
-    let mut task = send_work(move || fib(start_val));
-    loop {
-        match task.try_wait() {
-            Ok(_res) => {
-                // println!("Fibbo done: {res}!");
-                break;
-            }
-            Err(t) => {
-                task = t;
-                // let res = get_stats();
-                // println!("Waiting: {res:?}...",);
-                sleep(Duration::from_millis(8));
-            }
-        }
-    }
+    send_work(|| fib(20)).wait();
     println!("After fibbo stats: {:#?}", get_stats());
     let mut jobs = Vec::new();
     for i in 0..100000 {
@@ -193,15 +205,25 @@ fn main() {
     }
     jobs.into_iter().map(|a| a.wait()).sum::<usize>();
     println!("After a lot of linear work stats: {:#?}", get_stats());
+
     let mut jobs = Vec::new();
-    for _ in 0..100000 {
-        jobs.push(send_work(move || {
-            let rand = random::<usize>() % 10;
-            if rand == 0 {
-                panic!("OUCH!")
-            }
-        }));
+    fn panic_job() {
+        let rand = random::<usize>() % 2;
+        if rand == 0 {
+            panic!("OUCH!")
+        }
     }
-    jobs.into_iter().for_each(|a| a.wait());
-    println!("After crash test stats: {:#?}", get_stats());
+    for _ in 0..100000 {
+        jobs.push(send_work(panic_job));
+    }
+
+    let mut sum = 0;
+    while let Some(w) = jobs.pop() {
+        if w.try_wait().is_some() {
+            sum += 1;
+        } else {
+            jobs.push(send_work(panic_job));
+        }
+    }
+    println!("After crash test stats (sum: {sum}): {:#?}", get_stats());
 }
