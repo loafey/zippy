@@ -1,5 +1,7 @@
+#![feature(random)]
 use std::{
     collections::BTreeMap,
+    random::random,
     sync::{
         Arc, LazyLock, OnceLock,
         atomic::{AtomicBool, Ordering},
@@ -12,7 +14,8 @@ use std::{
 struct Job<T>(Receiver<T>);
 impl<T> Job<T> {
     pub fn wait(self) -> T {
-        self.0.recv().unwrap()
+        let recv = self.0;
+        recv.recv().unwrap()
     }
     pub fn try_wait(self) -> Result<T, Self> {
         match self.0.try_recv() {
@@ -161,27 +164,38 @@ fn fib(num: usize) -> usize {
 
 fn main() {
     // println!("{}", jobs.into_iter().map(|a| a.wait()).sum::<usize>());
-    let start_val = 24;
+    let start_val = 20;
     let mut task = send_work(move || fib(start_val));
     loop {
         match task.try_wait() {
-            Ok(res) => {
-                println!("Fibbo done: {res}!");
+            Ok(_res) => {
+                // println!("Fibbo done: {res}!");
                 break;
             }
             Err(t) => {
                 task = t;
-                let res = get_stats();
-                println!("Waiting: {res:?}...",);
+                // let res = get_stats();
+                // println!("Waiting: {res:?}...",);
                 sleep(Duration::from_millis(8));
             }
         }
     }
-    println!("After fibbo stats: {:?}", get_stats());
+    println!("After fibbo stats: {:#?}", get_stats());
     let mut jobs = Vec::new();
     for i in 0..100000 {
         jobs.push(send_work(move || i));
     }
     jobs.into_iter().map(|a| a.wait()).sum::<usize>();
-    println!("Final stats: {:?}", get_stats());
+    println!("After a lot of linear work stats: {:#?}", get_stats());
+    let mut jobs = Vec::new();
+    for _ in 0..100000 {
+        jobs.push(send_work(move || {
+            let rand = random::<usize>() % 10;
+            if rand == 0 {
+                panic!("OUCH!")
+            }
+        }));
+    }
+    jobs.into_iter().for_each(|a| a.wait());
+    println!("After crash test stats: {:#?}", get_stats());
 }
