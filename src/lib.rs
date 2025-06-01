@@ -244,6 +244,33 @@ pub fn get_stats() -> PoolStats {
 /// so if your jobs rely upon an order, you have to implement that yourself.
 ///
 /// If a job is recursive (i.e a job that spawns more jobs),
+/// and no other workers are available, the job will be executed on the current thread.
+/// If this is not a wanted feature, use [`spawn_rec`] instead.
+/// Rescue threads can still be spawned if need be, but they
+/// will be rarer, when compared to [`spawn_rec`].
+pub fn spawn<T: 'static, F: FnOnce() -> T + 'static>(f: F) -> Job<T> {
+    manager_thread();
+
+    let (res_send, res_recv) = channel();
+    let work = Work {
+        func: Box::new(move || drop(res_send.send(f()))),
+    };
+    if get_stats().available_workers == 0 {
+        (work.func)()
+    } else {
+        send_to_manager(WorkerMessage::Work(
+            work,
+            ALREADY_WORKING.with(|a| a.load(Ordering::Relaxed)),
+        ));
+    }
+    Job(res_recv)
+}
+
+/// Send a job to the workpool.
+/// Keep in mind that no promise is made about the execution order of jobs,
+/// so if your jobs rely upon an order, you have to implement that yourself.
+///
+/// If a job is recursive (i.e a job that spawns more jobs),
 /// these new jobs get flagged as recursive.
 /// If there are no workers available when a recursive job is submitted
 /// a new thread (refered to as a rescue thread)
@@ -251,14 +278,16 @@ pub fn get_stats() -> PoolStats {
 /// in the backlog.
 /// This is done to avoid deadlocks where all workers are waiting on some other
 /// worker to clean up the backlog.
-pub fn spawn<T: 'static, F: FnOnce() -> T + 'static>(f: F) -> Job<T> {
+pub fn spawn_rec<T: 'static, F: FnOnce() -> T + 'static>(f: F) -> Job<T> {
     manager_thread();
 
     let (res_send, res_recv) = channel();
+    let work = Work {
+        func: Box::new(move || drop(res_send.send(f()))),
+    };
+
     send_to_manager(WorkerMessage::Work(
-        Work {
-            func: Box::new(move || drop(res_send.send(f()))),
-        },
+        work,
         ALREADY_WORKING.with(|a| a.load(Ordering::Relaxed)),
     ));
     Job(res_recv)
