@@ -245,9 +245,15 @@ pub fn get_stats() -> PoolStats {
 ///
 /// If a job is recursive (i.e a job that spawns more jobs),
 /// and no other workers are available, the job will be executed on the current thread.
-/// If this is not a wanted feature, use [`spawn_rec`] instead.
+/// If this is not a wanted feature, use [`spawn_thread`] instead.
 /// Rescue threads can still be spawned if need be, but they
-/// will be rarer, when compared to [`spawn_rec`].
+/// will be rarer, when compared to [`spawn_thread`].
+///
+/// # Safety
+/// If a job panics, and it is executing on the current thread, the current thread will
+/// panic. Take care to write panic free code or use `spawn_thread` instead.
+/// If you are writing a recursive function with this and it can panic,
+/// call the outmost function using [`spawn_thread`] instead.
 pub fn spawn<T: 'static, F: FnOnce() -> T + 'static>(f: F) -> Job<T> {
     manager_thread();
 
@@ -278,7 +284,7 @@ pub fn spawn<T: 'static, F: FnOnce() -> T + 'static>(f: F) -> Job<T> {
 /// in the backlog.
 /// This is done to avoid deadlocks where all workers are waiting on some other
 /// worker to clean up the backlog.
-pub fn spawn_rec<T: 'static, F: FnOnce() -> T + 'static>(f: F) -> Job<T> {
+pub fn spawn_thread<T: 'static, F: FnOnce() -> T + 'static>(f: F) -> Job<T> {
     manager_thread();
 
     let (res_send, res_recv) = channel();

@@ -29,7 +29,7 @@ cores on the computer running the program.
 
 If a job is recursive (i.e a job that spawns more jobs),
 these new jobs get flagged as recursive.
-If there are no workers available when a recursive job is submitted using `spawn_rec`
+If there are no workers available when a recursive job is submitted using `spawn_thread`
 a new thread (refered to as rescue threads in the documentation)
 will be spawned to handle this job, instead of being put
 in the backlog.
@@ -40,7 +40,7 @@ You can also use `spawn` instead, as to minimize the need for creating new threa
 If there are no workers available when `spawn` is called it will
 simply execute the job on the current thread.
 Rescue threads can still be spawned when using `spawn` but they
-will be rarer when compared to using `spawn_rec`.
+will be rarer when compared to using `spawn_thread`.
 
 ```rs
 // A very expensive version of Fibonacci
@@ -48,8 +48,8 @@ fn fib(num: usize) -> usize {
     match num {
         0 | 1 => num,
         _ => {
-            let a = crate::spawn_rec(move || fib(num - 1));
-            let b = crate::spawn_rec(move || fib(num - 2));
+            let a = crate::spawn_thread(move || fib(num - 1));
+            let b = crate::spawn_thread(move || fib(num - 2));
             a.wait() + b.wait()
         }
     }
