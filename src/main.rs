@@ -63,15 +63,18 @@ fn manager_thread() {
             let mut taken = BTreeMap::new();
             for i in 0..*THREAD_COUNT {
                 let (sender, recv) = channel::<Work>();
-                std::thread::spawn(move || {
-                    while let Ok(work) = recv.recv() {
-                        ALREADY_WORKING.with(|a| a.store(true, Ordering::Relaxed));
-                        (work.func)();
-                        ALREADY_WORKING.with(|a| a.store(false, Ordering::Relaxed));
-                        let sender = HEAD_SENDER.get().unwrap();
-                        sender.send(WorkerMessage::Done(i)).unwrap();
-                    }
-                });
+                std::thread::Builder::new()
+                    .name(format!("Pool Worker {i}"))
+                    .spawn(move || {
+                        while let Ok(work) = recv.recv() {
+                            ALREADY_WORKING.with(|a| a.store(true, Ordering::Relaxed));
+                            (work.func)();
+                            ALREADY_WORKING.with(|a| a.store(false, Ordering::Relaxed));
+                            let sender = HEAD_SENDER.get().unwrap();
+                            sender.send(WorkerMessage::Done(i)).unwrap();
+                        }
+                    })
+                    .unwrap();
                 workers.insert(i, sender);
             }
 
@@ -85,11 +88,14 @@ fn manager_thread() {
                         if workers.is_empty() {
                             if rec {
                                 rescue_threads = rescue_threads.wrapping_add(1);
-                                std::thread::spawn(move || {
-                                    let work = work;
-                                    ALREADY_WORKING.with(|a| a.store(true, Ordering::Relaxed));
-                                    (work.func)();
-                                });
+                                std::thread::Builder::new()
+                                    .name(format!("Rescue Thread {rescue_threads}"))
+                                    .spawn(move || {
+                                        let work = work;
+                                        ALREADY_WORKING.with(|a| a.store(true, Ordering::Relaxed));
+                                        (work.func)();
+                                    })
+                                    .unwrap();
                             } else {
                                 backlog.push(work);
                             }
