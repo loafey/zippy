@@ -130,13 +130,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "workpool"
-version = "0.1.0"
-dependencies = [
- "rand",
-]
-
-[[package]]
 name = "zerocopy"
 version = "0.8.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -154,4 +147,11 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "zippy"
+version = "0.1.0"
+dependencies = [
+ "rand",
 ]
