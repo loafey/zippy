@@ -2,6 +2,7 @@ use std::{
     collections::BTreeMap,
     sync::{
         Arc, LazyLock, OnceLock,
+        atomic::{AtomicBool, Ordering},
         mpsc::{Receiver, Sender, channel},
     },
     thread::sleep,
@@ -13,6 +14,12 @@ impl<T> Job<T> {
     pub fn wait(self) -> T {
         self.0.recv().unwrap()
     }
+    pub fn try_wait(self) -> Result<T, Self> {
+        match self.0.try_recv() {
+            Ok(res) => Ok(res),
+            Err(_) => Err(self),
+        }
+    }
 }
 
 struct Work {
@@ -21,16 +28,30 @@ struct Work {
 unsafe impl Send for Work {}
 unsafe impl Sync for Work {}
 
+type Recursive = bool;
 enum WorkerMessage {
-    Work(Work),
+    Work(Work, Recursive),
     Done(usize),
+    GetStats(Sender<PoolStats>),
 }
 
 static THREAD_COUNT: LazyLock<usize> =
     LazyLock::new(|| std::thread::available_parallelism().unwrap().get());
 
+#[derive(Debug, Clone, Copy)]
+struct PoolStats {
+    available_workers: usize,
+    taken_workers: usize,
+    backlog: usize,
+    total_work_count: usize,
+    total_rescue_threads: usize,
+}
+
+thread_local! {
+    static ALREADY_WORKING: AtomicBool = AtomicBool::default();
+}
 static HEAD_SENDER: OnceLock<Arc<Sender<WorkerMessage>>> = OnceLock::new();
-fn send_work<T: 'static, F: FnOnce() -> T + 'static>(f: F) -> Job<T> {
+fn manager_thread() {
     if HEAD_SENDER.get().is_none() {
         let (s, r) = channel::<WorkerMessage>();
         HEAD_SENDER.set(Arc::new(s)).unwrap();
@@ -41,28 +62,36 @@ fn send_work<T: 'static, F: FnOnce() -> T + 'static>(f: F) -> Job<T> {
                 let (sender, recv) = channel::<Work>();
                 std::thread::spawn(move || {
                     while let Ok(work) = recv.recv() {
+                        ALREADY_WORKING.with(|a| a.store(true, Ordering::Relaxed));
                         (work.func)();
+                        ALREADY_WORKING.with(|a| a.store(false, Ordering::Relaxed));
                         let sender = HEAD_SENDER.get().unwrap();
                         sender.send(WorkerMessage::Done(i)).unwrap();
-                        println!("normal thread done");
                     }
                 });
                 workers.insert(i, sender);
             }
 
             let mut backlog = Vec::new();
-            let mut work_count = 0;
+            let mut work_count: usize = 0;
+            let mut rescue_threads: usize = 0;
+            macro_rules! print_info {
+                () => {
+                    // println!("Got work: {work_count}:{}:{rescue_threads}", backlog.len());
+                };
+            }
             while let Ok(work) = r.recv() {
                 match work {
-                    WorkerMessage::Work(work) => {
-                        work_count += 1;
-                        println!("Got work: {work_count} {}", backlog.len());
+                    WorkerMessage::Work(work, rec) => {
+                        work_count = work_count.wrapping_add(1);
+                        print_info!();
                         if workers.is_empty() {
-                            if backlog.len() > *THREAD_COUNT {
+                            if rec {
+                                rescue_threads = rescue_threads.wrapping_add(1);
                                 std::thread::spawn(move || {
                                     let work = work;
+                                    ALREADY_WORKING.with(|a| a.store(true, Ordering::Relaxed));
                                     (work.func)();
-                                    println!("backlog thread done");
                                 });
                             } else {
                                 backlog.push(work);
@@ -75,28 +104,53 @@ fn send_work<T: 'static, F: FnOnce() -> T + 'static>(f: F) -> Job<T> {
                     }
                     WorkerMessage::Done(i) => {
                         if let Some(work) = backlog.pop() {
+                            print_info!();
                             taken.get(&i).unwrap().send(work).unwrap();
                             if backlog.is_empty() {
                                 backlog = Vec::new();
                             }
                         } else {
+                            print_info!();
                             let worker = taken.remove(&i).unwrap();
                             workers.insert(i, worker);
                         }
                     }
+                    WorkerMessage::GetStats(sender) => sender
+                        .send(PoolStats {
+                            available_workers: workers.len(),
+                            taken_workers: taken.len(),
+                            backlog: backlog.len(),
+                            total_work_count: work_count,
+                            total_rescue_threads: rescue_threads,
+                        })
+                        .unwrap(),
                 }
             }
         });
     }
-
+}
+fn get_stats() -> PoolStats {
+    manager_thread();
     let sender = HEAD_SENDER.get().unwrap();
     let (res_send, res_recv) = channel();
+    sender.send(WorkerMessage::GetStats(res_send)).unwrap();
+    res_recv.recv().unwrap()
+}
+fn send_work<T: 'static, F: FnOnce() -> T + 'static>(f: F) -> Job<T> {
+    manager_thread();
+
+    let sender = HEAD_SENDER.get().unwrap();
+
+    let (res_send, res_recv) = channel();
     sender
-        .send(WorkerMessage::Work(Work {
-            func: Box::new(move || {
-                res_send.send(f()).unwrap();
-            }),
-        }))
+        .send(WorkerMessage::Work(
+            Work {
+                func: Box::new(move || {
+                    res_send.send(f()).unwrap();
+                }),
+            },
+            ALREADY_WORKING.with(|a| a.load(Ordering::Relaxed)),
+        ))
         .unwrap();
     Job(res_recv)
 }
@@ -107,23 +161,33 @@ fn fib(num: usize) -> usize {
         1 => 1,
         _ => {
             let a = send_work(move || fib(num - 1)).wait();
-            let b = send_work(move || fib(num - 2));
-            a + b.wait()
+            let b = send_work(move || fib(num - 2)).wait();
+            a + b
         }
     }
 }
 
 fn main() {
-    // let a = send_work(|| {
-    //     sleep(Duration::from_secs(1));
-    //     1
-    // });
-    // let b = send_work(|| {
-    //     sleep(Duration::from_secs(1));
-    //     2
-    // });
-    // let c = send_work(move || a.wait() + b.wait());
-
-    // println!("{}", c.wait());ä
-    println!("{}", fib(10));
+    // let mut jobs = Vec::new();
+    // for i in 0..100 {
+    // jobs.push(send_work(move || id(i)));
+    // }
+    // println!("{}", jobs.into_iter().map(|a| a.wait()).sum::<usize>());
+    let start_val = 24;
+    let mut task = send_work(move || fib(start_val));
+    loop {
+        match task.try_wait() {
+            Ok(res) => {
+                println!("Fibbo done: {res}!");
+                break;
+            }
+            Err(t) => {
+                task = t;
+                let res = get_stats();
+                println!("Waiting: {res:?}...",);
+                sleep(Duration::from_millis(16));
+            }
+        }
+    }
+    println!("Final stats: {:?}", get_stats())
 }
