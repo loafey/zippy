@@ -2,7 +2,7 @@
 #![doc = include_str!("../readme.md")]
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     num::NonZero,
     sync::{
         Arc, OnceLock,
@@ -163,7 +163,7 @@ fn manager_thread() {
                 workers.insert(i, spawn_worker(i));
             }
 
-            let mut backlog = Vec::new();
+            let mut backlog = VecDeque::new();
             let mut work_count: usize = 0;
             let mut rescue_threads: usize = 0;
             let mut panics: usize = 0;
@@ -187,7 +187,7 @@ fn manager_thread() {
                                 })
                                 .expect("creating a rescue thread failed");
                         } else {
-                            backlog.push(work);
+                            backlog.push_back(work);
                         }
                     }
                     WorkerMessage::Done(i, panic) => {
@@ -202,7 +202,7 @@ fn manager_thread() {
                         };
                         workers.insert(i, worker);
 
-                        if let Some(work) = backlog.pop() {
+                        if let Some(work) = backlog.pop_front() {
                             let worker = workers
                                 .remove(&i)
                                 .expect("an available thread silently got untracked");
@@ -211,7 +211,7 @@ fn manager_thread() {
                                 .expect("an available thread silently died");
                             taken.insert(i, worker);
                             if backlog.is_empty() {
-                                backlog = Vec::new();
+                                backlog = VecDeque::new();
                             }
                         }
                     }
