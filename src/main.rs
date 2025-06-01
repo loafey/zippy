@@ -75,16 +75,10 @@ fn manager_thread() {
             let mut backlog = Vec::new();
             let mut work_count: usize = 0;
             let mut rescue_threads: usize = 0;
-            macro_rules! print_info {
-                () => {
-                    // println!("Got work: {work_count}:{}:{rescue_threads}", backlog.len());
-                };
-            }
             while let Ok(work) = r.recv() {
                 match work {
                     WorkerMessage::Work(work, rec) => {
                         work_count = work_count.wrapping_add(1);
-                        print_info!();
                         if workers.is_empty() {
                             if rec {
                                 rescue_threads = rescue_threads.wrapping_add(1);
@@ -104,13 +98,11 @@ fn manager_thread() {
                     }
                     WorkerMessage::Done(i) => {
                         if let Some(work) = backlog.pop() {
-                            print_info!();
                             taken.get(&i).unwrap().send(work).unwrap();
                             if backlog.is_empty() {
                                 backlog = Vec::new();
                             }
                         } else {
-                            print_info!();
                             let worker = taken.remove(&i).unwrap();
                             workers.insert(i, worker);
                         }
@@ -168,10 +160,6 @@ fn fib(num: usize) -> usize {
 }
 
 fn main() {
-    // let mut jobs = Vec::new();
-    // for i in 0..100 {
-    // jobs.push(send_work(move || id(i)));
-    // }
     // println!("{}", jobs.into_iter().map(|a| a.wait()).sum::<usize>());
     let start_val = 24;
     let mut task = send_work(move || fib(start_val));
@@ -189,5 +177,11 @@ fn main() {
             }
         }
     }
-    println!("Final stats: {:?}", get_stats())
+    println!("After fibbo stats: {:?}", get_stats());
+    let mut jobs = Vec::new();
+    for i in 0..100000 {
+        jobs.push(send_work(move || i));
+    }
+    jobs.into_iter().map(|a| a.wait()).sum::<usize>();
+    println!("Final stats: {:?}", get_stats());
 }
