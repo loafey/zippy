@@ -14,6 +14,7 @@ fn fib(num: usize) -> usize {
 
 fn main() {
     let now = Instant::now();
-    zippy::spawn(|| fib(20)).wait();
-    println!("took {:?}", now.elapsed())
+    zippy::spawn(|| fib(23)).wait();
+    println!("took {:?}", now.elapsed());
+    println!("{:?}", zippy::get_stats());
 }
