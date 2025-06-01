@@ -13,7 +13,7 @@ fn linear() {
     let mut jobs = Vec::new();
     let count = 100000;
     for _ in 0..count {
-        jobs.push(crate::spawn_thread(move || 1));
+        jobs.push(crate::spawn(move || 1));
     }
     let res = jobs.into_iter().map(|a| a.wait()).sum::<usize>();
     let after_stats = crate::get_stats();
@@ -45,15 +45,15 @@ fn recursive() {
         match num {
             0 | 1 => num,
             _ => {
-                let a = crate::spawn_thread(move || fib(num - 1));
-                let b = crate::spawn_thread(move || fib(num - 2));
+                let a = crate::spawn(move || fib(num - 1));
+                let b = crate::spawn(move || fib(num - 2));
                 a.wait() + b.wait()
             }
         }
     }
 
     let before_stats = crate::get_stats();
-    let res = crate::spawn_thread(|| fib(22)).wait();
+    let res = crate::spawn(|| fib(22)).wait();
     let after_stats = crate::get_stats();
 
     assert_eq!(res, 17711);
