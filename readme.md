@@ -1,6 +1,6 @@
 # zippy
 
-Dead-simple zero-dependency workpool implementation.
+Dead-simple and naive zero-dependency workpool implementation.
 
 ```rs
 fn main() {
