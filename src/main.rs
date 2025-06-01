@@ -39,12 +39,12 @@ static THREAD_COUNT: LazyLock<usize> =
     LazyLock::new(|| std::thread::available_parallelism().unwrap().get());
 
 #[derive(Debug, Clone, Copy)]
-struct PoolStats {
-    available_workers: usize,
-    taken_workers: usize,
-    backlog: usize,
-    total_work_count: usize,
-    total_rescue_threads: usize,
+pub struct PoolStats {
+    pub available_workers: usize,
+    pub taken_workers: usize,
+    pub backlog: usize,
+    pub total_work_count: usize,
+    pub total_rescue_threads: usize,
 }
 
 thread_local! {
@@ -185,7 +185,7 @@ fn main() {
                 task = t;
                 let res = get_stats();
                 println!("Waiting: {res:?}...",);
-                sleep(Duration::from_millis(16));
+                sleep(Duration::from_millis(8));
             }
         }
     }
