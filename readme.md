@@ -21,7 +21,8 @@ Zippy sports a number of features:
 If you submit more jobs than you have threads, new jobs will be
 put in a backlog which workers will grab from when they are finished.
 
-In the current version, zippy X threads, where X is equal to the amount of CPU
+In the current version, zippy uses X number of threads,
+where X is equal to the amount of CPU
 cores on the computer running the program.
 
 ## Recursive job detection
